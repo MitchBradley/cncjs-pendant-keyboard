@@ -14,6 +14,9 @@ program
     .version(pkg.version)
     .usage("-s <secret> -p <port> [options]")
     .option("-l, --list", "list available ports then exit")
+    .option("-L, --list-hid", "list HID devices then exit")
+    .option("-H, --hid-vid <vendorId>", "the Vendor Id of the keyboard HID device")
+    .option("-P, --hid-pid <productId>", "the Product Id of the keyboard HID device")
     .option("-s, --secret", "the secret key stored in the ~/.cncrc file")
     .option("-p, --port <port>", "path or name of serial port")
     .option("-b, --baudrate <baudrate>", "baud rate (default: 115200)", 115200)
@@ -43,7 +46,11 @@ var options = {
     socketAddress: program.socketAddress,
     socketPort: program.socketPort,
     controllerType: program.controllerType,
-    accessTokenLifetime: program.accessTokenLifetime
+    accessTokenLifetime: program.accessTokenLifetime,
+    list: program.list,
+    listHid: program.listHid,
+    hidVid: program.hidVid,
+    hidPid: program.hidPid,
 };
 
 if (options.list) {
@@ -51,7 +58,7 @@ if (options.list) {
         ports.forEach(function(port) {
             console.log(port.path);
         });
-    }, function(err) {
+    }).catch(function(err) {
         console.error(err);
         process.exit(1);
     });
@@ -116,19 +123,23 @@ var createServer = function(options) {
             store.sender.status = data;
         });
 
-        const findPath = interface =>
-            hid
-                .devices()
-                .find(
-                    item =>
-                        item.vendorId === 26881 &&
-                        item.productId === 9985 &&
-                        item.interface === interface
+        var vid = options.hidVid && Number(options.hidVid);
+        var pid = options.hidPid && Number(options.hidPid);
+        if (vid === undefined && pid === undefined) {
+            var keyboard_main = new hid.HID('0001:0006:00');
+            var keyboard_extra = new hid.HID('0001:0006:01');
+        } else {
+            const findPath = (vid, pid, interface) =>
+                hid.devices().find(item =>
+                    (vid === undefined || item.vendorId === vid) &&
+                    (pid === undefined || item.productId === pid) &&
+                    item.usagePage === 1 &&
+                    item.interface === interface
                 ).path;
 
-        console.log("Keyboard HID Address:", findPath(0), " & ", findPath(1));
-        var keyboard_main = new hid.HID(findPath(0));
-        var keyboard_extra = new hid.HID(findPath(1));
+            var keyboard_main = new hid.HID(findPath(vid, pid, 0));
+            var keyboard_extra = new hid.HID(findPath(vid, pid, 1));
+        }
 
         keyboard_main.on("data", function(data) {
             var recv = data.toJSON().data;
@@ -271,8 +282,11 @@ var createServer = function(options) {
     });
 };
 
-// console.log('List of connected devices (paths): ');
-// console.log('devices:', hid.devices());
+if (options.listHid) {
+    console.log('List of connected HID devices: ');
+    console.log('devices:', hid.devices());
+    return;
+}
 
 if (options.port) {
     createServer(options);
@@ -280,26 +294,39 @@ if (options.port) {
 }
 
 serialport.list().then(function(ports) {
-    const choices = ports.map(function(port) {
-        return port.path;
-    });
+    if (!ports.length) {
+        console.error("No serial ports found");
+        process.exit(1);
+    }
+    if (ports.length === 1) {
+        port = ports[0].path;
+        console.log("Using the only serial port " + port);
+        options.port = port;
+        createServer(options);
+    } else {
 
-    inquirer
-        .prompt([
+        const choices = ports.map(function(port) {
+            return port.path;
+        });
+
+        inquirer
+            .prompt([
             {
-                type: "list",
+                type: "rawlist",
                 name: "port",
                 message: "Specify which port you want to use?",
                 choices: choices
             }
-        ])
-        .then(function(answers) {
-            options.port = answers.port;
-
-            createServer(options);
-        });
-
-}, function(err) {
+            ])
+            .then(function(answers) {
+                options.port = answers.port;
+                createServer(options);
+            }).catch(function(err) {
+                console.error(err);
+                process.exit(1);
+            });
+    }
+}).catch(function(err) {
     console.error(err);
     process.exit(1);
 });
